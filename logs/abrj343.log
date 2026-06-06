@@ -1,0 +1,19 @@
+
+> gogl-log@1.0.0 start
+> ts-node --transpile-only src/index.ts abrj343
+
+Запуск авторизации для аккаунта: abrj343... (Видимый)
+Перехожу на google.com...
+Загрузка кук для аккаунта abrj343...
+Куки успешно загружены.
+Снова перехожу на google.com для применения кук...
+Перехожу на страницу входа: https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin...
+Ошибка в runAuth: page.goto: Timeout 60000ms exceeded.
+Call log:
+[2m  - navigating to "https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin", waiting until "networkidle"[22m
+
+    at runAuth (/Users/mac/gogl-log/src/tasks/auth.ts:58:20)
+    at async /Users/mac/gogl-log/src/index.ts:9:3 {
+  name: 'TimeoutError'
+}
+Браузер закрыт.

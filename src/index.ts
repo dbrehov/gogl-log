@@ -1,15 +1,31 @@
 import { runAuth } from './tasks/auth';
+import { runColab } from './tasks/colab';
+import { runCheck } from './tasks/check';
 import fs from 'fs';
 import path from 'path';
 
 (async () => {
   const args = process.argv.slice(2);
   const isHeadless = args.includes('less');
-  const accountName = args.find(arg => arg !== 'less');
+  
+  // Определяем, какой таск запускать
+  let taskName = 'auth';
+  let runTask = runAuth;
+
+  if (args.includes('colab')) {
+    taskName = 'colab';
+    runTask = runColab;
+  } else if (args.includes('check')) {
+    taskName = 'check';
+    runTask = runCheck;
+  }
+  
+  // Ищем имя аккаунта (любой аргумент, который не 'less', не 'colab' и не 'check')
+  const accountName = args.find(arg => arg !== 'less' && arg !== 'colab' && arg !== 'check');
   
   if (accountName) {
-    console.log(`Запуск авторизации для конкретного аккаунта: ${accountName}... (${isHeadless ? 'Безголовый' : 'Видимый'})`);
-    await runAuth(isHeadless, accountName);
+    console.log(`Запуск ${taskName} для конкретного аккаунта: ${accountName}... (${isHeadless ? 'Безголовый' : 'Видимый'})`);
+    await runTask(isHeadless, accountName);
   } else {
     const cookiesDir = path.join(process.cwd(), 'cookies');
     
@@ -19,15 +35,15 @@ import path from 'path';
     }
 
     const files = fs.readdirSync(cookiesDir).filter(file => file.endsWith('.json'));
-    console.log(`Аккаунтов найдено: ${files.length}. Запускаю поочередную авторизацию... (${isHeadless ? 'Безголовый' : 'Видимый'})`);
+    console.log(`Аккаунтов найдено: ${files.length}. Запускаю поочередный ${taskName}... (${isHeadless ? 'Безголовый' : 'Видимый'})`);
 
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
       const name = file.replace('.json', '');
       console.log(`\n[${i + 1}/${files.length}] Обработка аккаунта: ${name}`);
-      await runAuth(isHeadless, name);
+      await runTask(isHeadless, name);
       console.log(`----------------------------------------------------------------`);
     }
-    console.log('\nВсе аккаунты обработаны.');
+    console.log(`\nВсе аккаунты обработаны. Задача ${taskName} завершена.`);
   }
 })();
