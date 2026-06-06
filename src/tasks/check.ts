@@ -1,5 +1,5 @@
 import { launchBrowser } from '../services/browser';
-import { sendText } from '../services/telegram';
+import { sendText, sendPhoto } from '../services/telegram';
 import fs from 'fs';
 import path from 'path';
 
@@ -70,8 +70,9 @@ export async function runCheck(headless: boolean = false, accountName: string = 
         const isVerifyPage = pageText.includes('Подтвердите свою личность') || pageText.includes('Verify it');
         
         if (isVerifyPage) {
-            console.log(`Обнаружена проверка личности для ${accountName}. Отправляю уведомление в Telegram...`);
+            console.log(`Обнаружена проверка личности для ${accountName}. Отправляю уведомление и скриншот в Telegram...`);
             await sendText(`${accountName} - live`);
+            await sendPhoto(page, `Аккаунт: ${accountName} - Требуется проверка личности`);
         } else {
             console.log(`Проверка личности не обнаружена для ${accountName}. Отправляю 'no' в Telegram...`);
             await sendText(`${accountName} - no`);
