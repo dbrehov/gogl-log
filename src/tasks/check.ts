@@ -67,7 +67,9 @@ export async function runCheck(headless: boolean = false, accountName: string = 
         console.log('СОДЕРЖИМОЕ СТРАНИЦЫ:\n' + pageText);
         console.log('------------------------------');
 
-        if (pageText.includes('Подтвердите свою личность')) {
+        const isVerifyPage = pageText.includes('Подтвердите свою личность') || pageText.includes('Verify it');
+        
+        if (isVerifyPage) {
             console.log(`Обнаружена проверка личности для ${accountName}. Отправляю уведомление в Telegram...`);
             await sendText(`${accountName} - live`);
         } else {
