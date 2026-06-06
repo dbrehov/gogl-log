@@ -2,10 +2,28 @@ import { launchBrowser } from '../services/browser';
 import fs from 'fs';
 import path from 'path';
 
+async function saveCookies(context: any, dir: string, filePath: string) {
+    try {
+        if (!fs.existsSync(dir)) {
+            fs.mkdirSync(dir, { recursive: true });
+        }
+        const cookies = await context.cookies();
+        fs.writeFileSync(filePath, JSON.stringify(cookies, null, 2));
+        console.log(`Куки сохранены в: ${filePath}`);
+    } catch (err) {
+        console.error('Ошибка при сохранении кук:', err);
+    }
+}
+
 export async function runAuth(headless: boolean = false, accountName: string = 'default') {
+    const signInUrl = 'https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin';
     const { browser, page } = await launchBrowser(headless);
     const context = page.context();
     const cookiesPath = path.join(process.cwd(), 'cookies', `${accountName}.json`);
+    const successCookiesDir = path.join(process.cwd(), 'cookies_success');
+    const successCookiesPath = path.join(successCookiesDir, `${accountName}.json`);
+    const failedCookiesDir = path.join(process.cwd(), 'cookies_failed');
+    const failedCookiesPath = path.join(failedCookiesDir, `${accountName}.json`);
 
     try {
         // 1. Загружаем страницу гугл
@@ -36,7 +54,6 @@ export async function runAuth(headless: boolean = false, accountName: string = '
         await page.goto('https://google.com', { timeout: 60000, waitUntil: 'networkidle' });
 
         // 4. Переход на страницу входа в аккаунт
-        const signInUrl = 'https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin';
         console.log(`Перехожу на страницу входа: ${signInUrl}...`);
         await page.goto(signInUrl, { timeout: 60000, waitUntil: 'networkidle' });
 
@@ -107,6 +124,32 @@ export async function runAuth(headless: boolean = false, accountName: string = '
 
             if (clicked) {
                 console.log('Клик по подтверждению успешно выполнен!');
+                
+                // Ожидание 5 секунд перед вводом почты
+                console.log('Ожидание 5 секунд перед вводом почты...');
+                await new Promise(resolve => setTimeout(resolve, 5000));
+                
+                // Проверка наличия текста 'iw' на странице перед вводом
+                console.log('Поиск текста "iw" на странице...');
+                try {
+                    const iwLocator = page.locator('text=iw').first();
+                    if (await iwLocator.isVisible()) {
+                        console.log('Текст "iw" найден на странице.');
+                    } else {
+                        console.log('Текст "iw" не найден.');
+                    }
+                } catch (searchErr) {
+                    console.log('Ошибка при поиске текста "iw": ' + searchErr.message);
+                }
+
+                // Ввод резервного email
+                console.log('Ввожу резервный email: iwocop@gmail.com...');
+                await page.keyboard.type('iwocop@gmail.com');
+                
+                // Нажатие Enter
+                console.log('Нажимаю Enter...');
+                await page.keyboard.press('Enter');
+                console.log('Email отправлен.');
             } else {
                 console.log('Экран подтверждения резервного адреса не найден, идем дальше.');
             }
@@ -114,9 +157,45 @@ export async function runAuth(headless: boolean = false, accountName: string = '
             console.log('Ошибка при поиске экрана подтверждения: ' + recErr.message);
         }
 
-        // 8. Ожидание 1 минута в самом конце
-        console.log('Финальное ожидание 1 минуты...');
-        await new Promise(resolve => setTimeout(resolve, 60000));
+        // 8. Ожидание 3 секунд в конце
+        console.log('Финальное ожидание 3 секунд...');
+        await new Promise(resolve => setTimeout(resolve, 3000));
+
+        // 9. Переход на google.com
+        console.log('Перехожу на google.com для проверки...');
+        await page.goto('https://google.com', { timeout: 60000, waitUntil: 'networkidle' });
+
+        // 10. Переход на страницу логина для проверки
+        console.log('Перехожу на страницу логина для проверки сессии...');
+        await page.goto(signInUrl, { timeout: 60000, waitUntil: 'networkidle' });
+
+        // 11. Делаем скриншот
+        const screenshotPath = `screenshot_${accountName}.png`;
+        await page.screenshot({ path: screenshotPath, fullPage: true });
+        console.log(`Скриншот сохранен: ${screenshotPath}`);
+
+        // 12. Проверка успешности авторизации
+        console.log('Проверяю статус авторизации...');
+        const currentCookies = await context.cookies();
+        const currentUrl = page.url();
+        
+        const hasSessionCookie = currentCookies.some(c => 
+            c.name === 'SID' || c.name === '__Secure-3PSID' || c.name === 'HSID'
+        );
+        const isOnAccountPage = currentUrl.includes('myaccount.google.com') && 
+                               !currentUrl.includes('signin') && 
+                               !currentUrl.includes('consent');
+
+        if (hasSessionCookie && isOnAccountPage) {
+            console.log('✅ РЕЗУЛЬТАТ: Авторизация прошла успешно!');
+            await saveCookies(context, successCookiesDir, successCookiesPath);
+        } else if (hasSessionCookie) {
+            console.log('⚠️ РЕЗУЛЬТАТ: Куки сессии найдены, но страница аккаунта не открыта (возможен редирект).');
+            await saveCookies(context, failedCookiesDir, failedCookiesPath);
+        } else {
+            console.log('❌ РЕЗУЛЬТАТ: Авторизация НЕ прошла.');
+            await saveCookies(context, failedCookiesDir, failedCookiesPath);
+        }
 
     } catch (err) {
         console.error('Ошибка в runAuth:', err);
