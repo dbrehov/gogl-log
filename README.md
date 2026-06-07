@@ -1,61 +1,357 @@
-# GOGL-LOG: Google Account Session Maintainer
+# GOGL-LOG — Google Account Session Maintainer
 
-This project is an automated tool designed to maintain and refresh authentication sessions for a large number of Google accounts using Playwright.
+Инструмент для пакетного обновления session-cookies Google-аккаунтов через Playwright.
+Для каждого аккаунта имитируется «человеческий» повторный логин (ввод пароля, при необходимости — подтверждение через recovery-email), после чего обновлённые cookies складываются в локальный файл и в Back4App.
 
-## 🚀 Purpose
-The goal of the tool is to simulate a human login process to "renew" session cookies. It loads existing cookies, attempts a password login, handles recovery email checks, and saves the updated session state.
+> ⚠️ **Дисклеймер.** Проект автоматизирует логин в чужие (или в свои, но массово) Google-аккаунты, обходя второй фактор. Использование против ToS Google и во многих юрисдикциях — незаконно. Применяйте только к аккаунтам, на которые у вас есть явное разрешение, и на свой страх и риск.
 
-## 📁 Project Structure
-- `src/index.ts`: Entry point, parses CLI arguments.
-- `src/tasks/auth.ts`: Core authentication logic and verification.
-- `src/services/browser.ts`: Browser configuration (Stealth mode, User-Agent, Native Chrome path).
-- `cookies/`: Source directory containing JSON files of account cookies.
-- `cookies_success/`: Directory where cookies of successfully authenticated accounts are saved.
-- `cookies_failed/`: Directory where cookies of accounts that failed to fully authenticate are saved.
-- `logs/`: Step-by-step execution logs for each account.
-- `run_all.sh`: Bash script to iterate through all accounts in the cookies folder.
+---
 
-## 🛠 Installation
-1. Clone the repository.
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Ensure you have Google Chrome installed (the script targets the native app on macOS for better stealth).
+## 📑 Содержание
+- [Назначение](#-назначение)
+- [Как это работает](#-как-это-работает)
+- [Структура проекта](#-структура-проекта)
+- [Установка и требования](#-установка-и-требования)
+- [Конфигурация](#-конфигурация)
+- [Запуск](#-запуск)
+  - [Один аккаунт](#один-аккаунт)
+  - [Все аккаунты из cookies/](#все-аккаунты-из-cookies)
+  - [Фоновый режим](#фоновый-режим)
+- [Пошаговая логика auth-флоу](#-пошаговая-логика-auth-флоу)
+- [Приоритет источников cookies](#-приоритет-источников-cookies)
+- [Что считается успехом](#-что-считается-успехом)
+- [Куда сохраняется результат](#-куда-сохраняется-результат)
+- [Таймауты и поведение при ошибках](#-таймауты-и-поведение-при-ошибках)
+- [Back4App: детали и подводные камни](#-back4app-детали-и-подводные-камни)
+- [Скриншоты и логи](#-скриншоты-и-логи)
+- [Известные ограничения](#-известные-ограничения)
+- [Что стоит улучшить](#-что-стоит-улучшить)
+- [Структура cookies-файла](#-структура-cookies-файла)
+- [Безопасность](#-безопасность)
 
-## 📖 Usage
+---
 
-### Running for a single account
-You can run the script for a specific account by providing the account name (filename without `.json`):
-```bash
-# Headless mode (no window)
-npm start less <account_name>
+## 🎯 Назначение
+Массовое обновление session-cookies для большого числа Google-аккаунтов. Используется, когда:
+- нужно «освежить» сессии, не заходя руками в каждый аккаунт;
+- cookie-файлы истекли/частично потеряли актуальность, и Google требует повторный ввод пароля;
+- сессии хранятся в Back4App и используются другими сервисами (например, для рассылок/парсинга).
 
-# Visible mode (with browser window)
-npm start <account_name>
+Цель — довести сессию до состояния, в котором Google **считает пользователя залогиненным** (редирект на `myaccount.google.com`) и сохранить «живые» cookies обратно.
+
+---
+
+## 🔁 Как это работает
+
+```
+cookies/<name>.json  ──┐
+                       │  (приоритет — см. ниже)
+Back4App               │  ──►  Playwright (Chrome)  ──►  Google Sign-in
+                       │                                    │
+                       │                                    ├─ ввод пароля
+                       │                                    └─ recovery-email (если Google попросит)
+                       │                                    │
+                       └────────────────── ◄─────────────────┘
+                                       (новые cookies)
+                                          │
+                  ┌───────────────────────┼───────────────────────┐
+                  ▼                       ▼                       ▼
+        cookies_success/        Back4App (PUT/POST)        screenshot_<name>.png
 ```
 
-### Running for all accounts
-To process every account in the `cookies/` folder:
+Каждый запуск — один аккаунт, один браузер, один полный сценарий входа. Скрипт синхронный: один аккаунт за другим через `run_all.sh`.
+
+---
+
+## 📁 Структура проекта
+
+```
+gogl-log/
+├── src/
+│   ├── index.ts                  # CLI-парсер: один аккаунт или пачка
+│   ├── config.ts                 # Секреты: Telegram-бот, Back4App
+│   ├── tasks/
+│   │   └── auth.ts               # Основной auth-флоу
+│   └── services/
+│       ├── browser.ts            # Запуск Chrome со stealth-настройками
+│       └── back4app.ts           # Чтение/запись cookies в Back4App (Parse Server)
+│
+├── cookies/                      # Исходные cookie-файлы (по одному на аккаунт)
+│   └── <account_name>.json
+│
+├── cookies_success/              # Cookies успешно прошедших сессий
+│   └── <account_name>.json
+│
+├── cookies_failed/               # ⚠️ В текущей версии НЕ используется (см. ниже)
+│
+├── logs/                         # Пошаговые логи по каждому аккаунту
+│   └── <account_name>.log
+│
+├── screenshot_<account_name>.png # Скриншот финальной страницы (на каждый прогон)
+│
+├── run_all.sh                    # Запуск пачки аккаунтов
+├── run_all_output.log            # Сводный лог пакетного прогона
+├── package.json
+└── tsconfig.json
+```
+
+---
+
+## 🛠 Установка и требования
+
+- **Node.js 20+** (используется `ts-node --transpile-only`)
+- **Google Chrome** (на macOS скрипт ищет нативный `/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`, на Linux требуется указать `executablePath` в `src/services/browser.ts`)
+- **Playwright** (`npm install` сам поставит браузерные бинарники, но Chrome используется системный)
+
+```bash
+git clone <repo>
+cd gogl-log
+npm install
+```
+
+---
+
+## 🔐 Конфигурация
+
+Секреты лежат в `src/config.ts`:
+
+```ts
+export default {
+    chatId: '5114383390',
+    OUR_BOT_TOKEN: '<telegram bot token>',
+    BACK4APP_APP_ID: '<parse app id>',
+    BACK4APP_MASTER_KEY: '<parse master key>',
+};
+```
+
+> ⚠️ **Безопасность.** Master-Key от Parse Server = полный RW-доступ к базе. Telegram-токен = полный контроль над ботом. Не коммитьте реальные ключи. Держите этот файл вне репозитория (`.gitignore`) и при утечке — **немедленно ротируйте ключи в Back4App и BotFather**.
+
+---
+
+## ▶️ Запуск
+
+### Один аккаунт
+
+```bash
+# Видимый режим (с окном браузера, удобно для отладки)
+npm start <account_name>
+
+# Headless-режим (без окна)
+npm start less <account_name>
+```
+
+`<account_name>` — имя файла из `cookies/` без расширения `.json`.
+
+### Все аккаунты из `cookies/`
+
 ```bash
 chmod +x run_all.sh
 ./run_all.sh
 ```
-To run in the background (recommended for 1000+ accounts):
+
+Скрипт читает `cookies/*.json`, для каждого имени дёргает `npm start` (отдельный Node-процесс на аккаунт), пишет лог в `logs/<account_name>.log`.
+
+### Фоновый режим
+
+Для большого числа аккаунтов удобно запускать в фоне с отвязкой от терминала:
+
 ```bash
 nohup ./run_all.sh > run_all_output.log 2>&1 &
 ```
 
-## ⚙️ Technical Logic
-1. **Stealth**: Overwrites `navigator.webdriver` and uses a custom User-Agent to avoid bot detection.
-2. **Cookie Loading**: Loads existing cookies, cleanses `sameSite` attributes, and applies them to the browser context.
-3. **Auth Flow**:
-   - Selects the account from the Google Sign-in list.
-   - Inputs password and handles the transition.
-   - Watches for a "Recovery email" screen; if found, it confirms via a hardcoded recovery email.
-4. **Verification**: Redirects to the login page. If the browser automatically redirects to the Account Page (`myaccount.google.com`), the session is considered valid.
+Сводный лог пишется в `run_all_output.log`, пошаговые — в `logs/`.
 
-## 📊 Results
-- **Success**: Session cookies found + Account page reached $\rightarrow$ Saved to `cookies_success/`.
-- **Partial/Fail**: Session cookies found but no account page, or full login failure $\rightarrow$ Saved to `cookies_failed/`.
-- **Screenshots**: A full-page screenshot is taken for every attempt: `screenshot_<account_name>.png`.
+---
+
+## 🧭 Пошаговая логика auth-флоу
+
+1. **Загрузить cookies** (см. отдельный раздел «Приоритет источников»).
+2. Открыть `https://accounts.google.com/signin/v2/identifier?flowName=GlifWebSignIn&flowEntry=ServiceLogin` (timeout 15с, `domcontentloaded`).
+3. Кликнуть по нужному аккаунту в списке — селектор `div[jsname="MBVUVe"][data-identifier*="<account_name>"]`, timeout 3с. Если клик не удался — не критично, попробуем следовать дальше.
+4. Дождаться поля пароля `input[name="Passwd"]` (timeout 6с). Заполнить хардкод-паролем `12Qwert34` и нажать Enter. Дождаться `domcontentloaded` (timeout 6с, без throw).
+5. **Опционально:** если Google показал экран «Подтвердите резервный адрес электронной почты» (timeout 10с) —
+   - найти кликабельную ссылку/иконку с этим текстом (или `div[jsname="Bz112c"]`);
+   - кликнуть;
+   - определить, какой recovery-email использовать:
+     - `at iw` / `на iw` → `iwocop@gmail.com`
+     - `at ku` / `на ku` → `kupianas@gmail.com`
+     - иначе → `iwocop@gmail.com` (по умолчанию);
+   - подождать 3с, ввести email, нажать Enter.
+6. **Финальное ожидание** 5с.
+7. Перейти на `https://accounts.google.com/?hl=en-au&utm_source=chatgpt.com` (timeout 30с) — здесь Google должен редиректнуть в `myaccount.google.com`, если сессия валидна.
+8. Сделать полностраничный скриншот `screenshot_<account_name>.png`.
+9. Проверить URL: если содержит `myaccount` → **успех**.
+
+> Шаги 3–4 обёрнуты в `try/catch`, и при ошибке поток **не прерывается** — это намеренно, чтобы дойти до финальной проверки и записать актуальный snapshot cookies.
+
+---
+
+## 🥇 Приоритет источников cookies
+
+При старте `runAuth(accountName)` cookies берутся в таком порядке:
+
+| Приоритет | Источник                              | Когда используется                                              |
+|-----------|---------------------------------------|-----------------------------------------------------------------|
+| 1         | **Back4App** (`AccountCookies`)       | В БД есть запись с этим `accountName`                           |
+| 2         | Локальный файл `cookies/<name>.json`  | В БД записи нет (или запрос упал)                               |
+| 3         | — (никаких cookies)                   | Нет ни файла, ни записи — предупреждение, логин «с нуля»       |
+
+В лог пишется явный источник:
+
+```
+Куки загружены из [Back4App] для <name> (76 шт.)
+Источник cookies: [Back4App]
+```
+
+или
+
+```
+В Back4App запись для <name> не найдена, иду в локальный файл.
+Куки загружены из [local file: /path/to/cookies/<name>.json].
+Источник cookies: [local file]
+```
+
+**Санация cookies** (для любого источника): у каждой cookie удаляется поле `sameSite`, если оно `null` или не входит в `['Strict','Lax','None']` — Playwright такие значения не принимает.
+
+---
+
+## ✅ Что считается успехом
+
+Единственный критерий успеха — финальный URL после `page.goto('https://accounts.google.com/?...')` содержит подстроку `myaccount`:
+
+```ts
+const isOnAccountPage = page.url().includes('myaccount');
+```
+
+Если да:
+- cookies сохраняются в `cookies_success/<name>.json`;
+- cookies отправляются в Back4App (`updateCookiesInDb`).
+
+Если нет — пишется `❌ РЕЗУЛЬТАТ: Авторизация НЕ прошла.` и в БД ничего не уходит (в текущей версии cookies_failed не используется, чтобы не замусоривать БД битыми снимками).
+
+> ⚠️ Google иногда после ввода пароля сразу редиректит на `myaccount.google.com/accounts/SetOSID` — это **успех**, URL содержит `myaccount`. А иногда требует подтверждения через recovery-email — это тоже нормальный путь.
+
+---
+
+## 💾 Куда сохраняется результат
+
+| Что                                    | Где                                                    | Когда                                |
+|----------------------------------------|--------------------------------------------------------|--------------------------------------|
+| Cookies успешной сессии (локально)     | `cookies_success/<account_name>.json`                  | URL содержит `myaccount`             |
+| Cookies в Back4App                     | класс `AccountCookies`, поле `cookies`                 | То же, через `updateCookiesInDb`     |
+| Скриншот финальной страницы            | `screenshot_<account_name>.png` (корень проекта)       | Всегда (если дошли до этого шага)    |
+| Пошаговый лог                          | `logs/<account_name>.log` (только при запуске из `run_all.sh`) | Всегда                               |
+
+---
+
+## ⏱ Таймауты и поведение при ошибках
+
+| Операция                                         | Таймаут | Поведение при таймауте                       |
+|--------------------------------------------------|---------|----------------------------------------------|
+| `page.goto` на sign-in                           | 15с     | Пробрасывается наверх, прогон падает         |
+| Клик по аккаунту                                 | 3с      | Лог, идём дальше (пароль может ввестись сам) |
+| `waitForSelector` поля пароля                    | 6с      | Лог, идём дальше                             |
+| `waitForLoadState` после Enter                   | 6с      | Тихо игнорируется (`.catch`)                 |
+| Поиск экрана recovery-email                      | 10с     | **Тихо** идём дальше — экран не обязателен   |
+| Клик по recovery-ссылке                          | 3с      | Лог, идём дальше                             |
+| `setTimeout` перед вводом recovery-email         | 3с      | Фиксированная пауза                          |
+| Финальный `setTimeout`                           | 5с      | Фиксированная пауза                          |
+| `page.goto` на финальную страницу                | 30с     | Пробрасывается наверх                        |
+
+Все `try/catch` намеренно «глотают» ошибки промежуточных шагов, чтобы дойти до финального `page.goto` и сохранить актуальный снимок cookies, даже если что-то пошло не так в середине.
+
+---
+
+## 🗄 Back4App: детали и подводные камни
+
+Используется Parse Server. Класс `AccountCookies`, поля:
+- `accountName: string` — уникальный идентификатор аккаунта
+- `cookies: Cookie[]` — массив Playwright-cookies
+- `lastUpdated: ISO string` — таймстамп последней записи
+
+### ⚠️ Что важно знать
+
+1. **Where-фильтр пишется как `where`, а не `q`.**
+   Параметр `q` устарел и возвращает `400 Invalid parameter for query: q`. Актуальный синтаксис:
+   ```
+   GET /classes/AccountCookies?where={"accountName":"<name>"}
+   ```
+   (в коде: `params: { where: JSON.stringify({ accountName }) }`).
+
+2. **Для обновления существующего объекта используется `PUT`, а не `PATCH`.**
+   Parse Server на Back4App **не поддерживает `PATCH`** для объектов класса и возвращает `404 Not Found`. Корректный метод:
+   ```
+   PUT /classes/AccountCookies/<objectId>
+   Body: { cookies: [...], lastUpdated: "<iso>" }
+   ```
+
+3. **Master-Key** в `src/config.ts` обязателен — без него Parse Server не пускает в обход ACL.
+
+Все эти тонкости инкапсулированы в `src/services/back4app.ts`. Если вы меняете БД или мигрируете на другой backend — правьте только этот файл.
+
+---
+
+## 🖼 Скриншоты и логи
+
+- `screenshot_<account_name>.png` — сохраняется **на каждый прогон** (даже при провале), в корне проекта. Удобно для визуальной диагностики: открыл PNG — сразу видно, на каком экране остановился Google.
+- `logs/<account_name>.log` — пишется только при запуске через `run_all.sh` (команда `npm start ... | tee`).
+- `run_all_output.log` — общий лог фонового прогона (если запускали через `nohup`).
+
+---
+
+## ⚠️ Известные ограничения
+
+- **Один Node-процесс на аккаунт.** `run_all.sh` запускает `npm start` заново для каждого аккаунта, то есть Chrome стартует/закрывается на каждом. На 1000+ аккаунтов это ~5–15с оверхеда на запуск + расход памяти.
+- **Нет параллелизма.** Все аккаунты обрабатываются строго последовательно.
+- **Нет ретраев.** Если Google в моменте вернул 429/«слишком много попыток» — аккаунт сразу уходит в failed-ветку, повторно не пробуем.
+- **Один и тот же пароль и 2 recovery-email на все аккаунты.** Это означает, что все они получены из одного источника.
+- **Примитивный stealth.** Переписывается только `navigator.webdriver` + `navigator.vendor` + фиксированный User-Agent. Современный bot-detection Google смотрит на canvas, WebGL, шрифты, TLS-fingerprint и т.д. — на больших объёмах аккаунты начнут ловить капчу или блокировку.
+- **Нет прогресс-чекпоинта.** При падении `run_all.sh` посередине вы не знаете, на каком аккаунте остановились, и при перезапуске обработаете всё заново.
+- **Секреты в репозитории.** `src/config.ts` лежит в Git — критично для безопасности.
+- **Hardcoded пароль в коде.** `12Qwert34` зашит прямо в `src/tasks/auth.ts`.
+- **Дрейф логов и кода.** В `logs/*.log` и `run_all_output.log` встречаются сообщения (`'Финальное ожидание 3 секунд'`, `'Снова перехожу на google.com для применения кук'`, ветка `'⚠️ РЕЗУЛЬТАТ: ...cookies_failed'`, и т.д.), которых **нет** в текущей версии `src/tasks/auth.ts`. Это следы старых коммитов — при анализе имейте в виду, что логи могут не соответствовать актуальному коду.
+
+---
+
+## 🚧 Что стоит улучшить
+
+- Перенести секреты в `.env` + `.gitignore`, отозвать старые ключи.
+- Заменить хардкод пароля/recovery-email на безопасное хранилище.
+- Переписать `run_all.sh` под один Node-процесс с очередью и параллелизмом (p-limit 2–3).
+- Добавить ретраи с экспоненциальной задержкой при `429` / «подозрительный вход».
+- Использовать stealth-плагин уровнем выше (например, `playwright-extra` + `puppeteer-extra-plugin-stealth`).
+- Расширить детектор успеха: проверять не только `myaccount` в URL, но и наличие `SID`/`HSID`/`SSID` в cookies.
+- Вести `progress.json` (cursor) — чтобы при перезапуске не обрабатывать уже готовые.
+- Структурный логгер вместо `console.log` — чтобы можно было парсить/грепать.
+
+---
+
+## 🧩 Структура cookies-файла
+
+Это стандартный массив cookies из Playwright (`context.cookies()`). Пример одной записи:
+
+```json
+[
+  {
+    "name": "SID",
+    "value": "...",
+    "domain": ".google.com",
+    "path": "/",
+    "expires": 1781234567,
+    "httpOnly": true,
+    "secure": true,
+    "sameSite": "Lax"
+  }
+]
+```
+
+В `cookies/` обычно лежат **сотни** таких записей на аккаунт (включая сервисные: COMPASS, OSID, __Secure-* и т.д.).
+
+---
+
+## 🔒 Безопасность
+
+1. **Не коммитьте `src/config.ts` с боевыми ключами.** Добавьте в `.gitignore` и держите шаблон `src/config.example.ts`.
+2. **При утечке — сразу ротируйте ключи** в Back4App и через `@BotFather` в Telegram.
+3. **Запускайте в изолированной среде.** Скрипт открывает Chrome с `--no-sandbox` — это осознанный риск ради stealth, но запускать от root нельзя.
+4. **Не используйте на чужих аккаунтах.** Помимо юридических рисков, Google быстро детектит массовый вход с одного IP с одинаковым UA и fingerprint — аккаунты уйдут в бан.

@@ -12,18 +12,34 @@ const api = axios.create({
     }
 });
 
+/**
+ * Хелпер: GET-запрос к Parse Server с where-фильтром.
+ * В Back4App параметр `q` для фильтра where УСТАРЕЛ и возвращает 400
+ * "Invalid parameter for query: q". Актуальный синтаксис — `where`,
+ * куда кладётся JSON-строка условия.
+ */
+async function findByAccountName(accountName: string): Promise<any[]> {
+    const CLASS_NAME = 'AccountCookies';
+    const response = await api.get(`/classes/${CLASS_NAME}`, {
+        params: {
+            where: JSON.stringify({ accountName })
+        }
+    });
+    return response.data?.results ?? [];
+}
+
 export async function updateCookiesInDb(accountName: string, cookies: any[]) {
     try {
         const CLASS_NAME = 'AccountCookies';
-        
-        // 1. a try to find existing object for this account
-        const queryResponse = await api.get(`/classes/${CLASS_NAME}?q=${encodeURIComponent(JSON.stringify({ accountName: accountName }))}`);
-        const results = queryResponse.data.results;
+        const results = await findByAccountName(accountName);
 
         if (results && results.length > 0) {
             // Update existing
+            // Parse Server на Back4App НЕ поддерживает PATCH для объектов класса
+            // (возвращает 404 Not Found). Для обновления используется PUT
+            // с полным телом объекта.
             const objectId = results[0].objectId;
-            await api.patch(`/classes/${CLASS_NAME}/${objectId}`, {
+            await api.put(`/classes/${CLASS_NAME}/${objectId}`, {
                 cookies: cookies,
                 lastUpdated: new Date().toISOString()
             });
@@ -45,9 +61,7 @@ export async function updateCookiesInDb(accountName: string, cookies: any[]) {
 
 export async function getCookiesFromDb(accountName: string): Promise<any[] | null> {
     try {
-        const CLASS_NAME = 'AccountCookies';
-        const queryResponse = await api.get(`/classes/${CLASS_NAME}?q=${encodeURIComponent(JSON.stringify({ accountName: accountName }))}`);
-        const results = queryResponse.data.results;
+        const results = await findByAccountName(accountName);
 
         if (results && results.length > 0) {
             return results[0].cookies;
