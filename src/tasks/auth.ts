@@ -186,6 +186,52 @@ export async function runAuth(headless: boolean = false, accountName: string = '
         console.log('Финальное ожидание 5 секунд...');
         await new Promise(resolve => setTimeout(resolve, 5000));
 
+        // После подтверждения Google иногда показывает экран
+        // "Не сейчас" / "Not now" (отложить добавление recovery-email).
+        // Кликаем, чтобы пройти дальше. Экран опционален.
+        try {
+            const skipTexts = ['Не сейчас', 'Not now'];
+            // Ждём появления кнопки (до 5с, без throw)
+            const appeared = await page
+                .waitForSelector('span[jsname="V67aGc"]', { timeout: 5000, state: 'visible' })
+                .then(() => true)
+                .catch(() => false);
+
+            if (!appeared) {
+                console.log('Кнопка "Не сейчас / Not now" не появилась, идём дальше.');
+            } else {
+                // Ищем span с нужным текстом и поднимаемся до кликабельного родителя
+                const btnHandle = await page.evaluateHandle((texts) => {
+                    const spans = document.querySelectorAll('span[jsname="V67aGc"]');
+                    for (const s of Array.from(spans)) {
+                        const t = (s.textContent || '').trim();
+                        if (texts.some(x => t.toLowerCase() === x.toLowerCase() || t.toLowerCase().includes(x.toLowerCase()))) {
+                            // Поднимаемся до ближайшего кликабельного предка
+                            let el = s as HTMLElement | null;
+                            while (el && el !== document.body) {
+                                const role = el.getAttribute('role');
+                                if (role === 'button' || el.tagName === 'BUTTON' || el.onclick) {
+                                    return el;
+                                }
+                                el = el.parentElement;
+                            }
+                            return s;
+                        }
+                    }
+                    return null;
+                }, skipTexts);
+
+                if (btnHandle && (await btnHandle.asElement())) {
+                    await btnHandle.asElement()!.click({ force: true });
+                    console.log('Клик по "Не сейчас / Not now" выполнен.');
+                } else {
+                    console.log('Текст "Не сейчас / Not now" не найден среди span[jsname="V67aGc"], идём дальше.');
+                }
+            }
+        } catch (skipErr) {
+            console.log('Ошибка при обработке "Не сейчас / Not now": ' + (skipErr as Error).message);
+        }
+
         // 9. Переход на финальную страницу для проверки
         console.log('Перехожу на финальную страницу для проверки...');
         await page.goto('https://accounts.google.com/?hl=en-au&utm_source=chatgpt.com', { timeout: 30000, waitUntil: 'domcontentloaded' });
